@@ -1360,7 +1360,7 @@ void amdgpu_vm_fini(struct amdgpu_device *adev, struct amdgpu_vm *vm)
 
 	for (i = 0; i < amdgpu_vm_num_pdes(adev); i++)
 		amdgpu_bo_unref(&vm->page_tables[i].entry.robj);
- 	kfree(vm->page_tables);
+	drm_free_large(vm->page_tables);
 
 	amdgpu_bo_unref(&vm->page_directory);
 	fence_put(vm->page_directory_fence);
