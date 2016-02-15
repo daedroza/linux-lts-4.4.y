@@ -115,6 +115,9 @@ enum {
 #define TCP_CC_INFO		26	/* Get Congestion Control (optional) info */
 #define TCP_SAVE_SYN		27	/* Record SYN headers for new connections */
 #define TCP_SAVED_SYN		28	/* Get SYN headers recorded for connection */
+#define TCP_STEALTH		29
+#define TCP_STEALTH_INTEGRITY	30
+#define TCP_STEALTH_INTEGRITY_LEN	31
 
 struct tcp_repair_opt {
 	__u32	opt_code;

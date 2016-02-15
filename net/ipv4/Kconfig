@@ -690,3 +690,13 @@ config TCP_MD5SIG
 	  on the Internet.
 
 	  If unsure, say N.
+
+config TCP_STEALTH
+	bool "TCP: Stealth TCP socket support"
+	default n
+	---help---
+	  This option enables support for stealth TCP sockets. If you do not
+	  know what this means, you do not need it.
+
+	  If unsure, say N.
+

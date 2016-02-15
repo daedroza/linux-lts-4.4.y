@@ -63,6 +63,7 @@
 #include <net/secure_seq.h>
 #include <net/tcp_memcontrol.h>
 #include <net/busy_poll.h>
+#include <net/secure_seq.h>
 
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -278,6 +279,21 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 		goto late_failure;
 
 	sk_set_txhash(sk);
+
+#ifdef CONFIG_TCP_STEALTH
+	/* If CONFIG_TCP_STEALTH is defined, we need to know the timestamp as
+	 * early as possible and thus move taking the snapshot of tcp_time_stamp
+	 * here.
+	 */
+	skb_mstamp_get(&tp->stealth.mstamp);
+
+	if (!tp->write_seq && likely(!tp->repair) &&
+	    unlikely(tp->stealth.mode & TCP_STEALTH_MODE_AUTH))
+		tp->write_seq = tcp_stealth_sequence_number(sk,
+					sk->sk_v6_daddr.s6_addr32,
+					sizeof(sk->sk_v6_daddr),
+					inet->inet_dport);
+#endif
 
 	if (!tp->write_seq && likely(!tp->repair))
 		tp->write_seq = secure_tcpv6_sequence_number(np->saddr.s6_addr32,
@@ -1183,7 +1199,8 @@ out:
 static int tcp_v6_do_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
-	struct tcp_sock *tp;
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct tcphdr *th = tcp_hdr(skb);
 	struct sk_buff *opt_skb = NULL;
 
 	/* Imagine: socket is IPv6. IPv4 packet arrives,
@@ -1242,6 +1259,13 @@ static int tcp_v6_do_rcv(struct sock *sk, struct sk_buff *skb)
 
 	if (tcp_checksum_complete(skb))
 		goto csum_err;
+
+#ifdef CONFIG_TCP_STEALTH
+	if (sk->sk_state == TCP_LISTEN && th->syn && !th->fin &&
+	    tp->stealth.mode & TCP_STEALTH_MODE_AUTH &&
+	    tcp_stealth_do_auth(sk, skb))
+		goto reset;
+#endif
 
 	if (sk->sk_state == TCP_LISTEN) {
 		struct sock *nsk = tcp_v6_cookie_check(sk, skb);

@@ -442,6 +442,12 @@ void tcp_parse_options(const struct sk_buff *skb,
 		       struct tcp_options_received *opt_rx,
 		       int estab, struct tcp_fastopen_cookie *foc);
 const u8 *tcp_parse_md5sig_option(const struct tcphdr *th);
+#ifdef CONFIG_TCP_STEALTH
+const bool tcp_parse_tsval_option(u32 *tsval, const struct tcphdr *th);
+int tcp_stealth_integrity(u16 *hash, u8 *secret, u8 *payload, int len);
+#define be32_isn_to_be16_av(x)	(((__be16 *)&x)[0])
+#define be32_isn_to_be16_ih(x)	(((__be16 *)&x)[1])
+#endif
 
 /*
  *	TCP v4 functions exported for the inet6 API

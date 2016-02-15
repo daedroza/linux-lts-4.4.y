@@ -75,6 +75,7 @@
 #include <net/secure_seq.h>
 #include <net/tcp_memcontrol.h>
 #include <net/busy_poll.h>
+#include <net/secure_seq.h>
 
 #include <linux/inet.h>
 #include <linux/ipv6.h>
@@ -234,6 +235,21 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	/* OK, now commit destination to socket.  */
 	sk->sk_gso_type = SKB_GSO_TCPV4;
 	sk_setup_caps(sk, &rt->dst);
+
+#ifdef CONFIG_TCP_STEALTH
+	/* If CONFIG_TCP_STEALTH is defined, we need to know the timestamp as
+	 * early as possible and thus move taking the snapshot of tcp_time_stamp
+	 * here.
+	 */
+	skb_mstamp_get(&tp->stealth.mstamp);
+
+	if (!tp->write_seq && likely(!tp->repair) &&
+	    unlikely(tp->stealth.mode & TCP_STEALTH_MODE_AUTH))
+		tp->write_seq = tcp_stealth_sequence_number(sk,
+					&inet->inet_daddr,
+					sizeof(inet->inet_daddr),
+					usin->sin_port);
+#endif
 
 	if (!tp->write_seq && likely(!tp->repair))
 		tp->write_seq = secure_tcp_sequence_number(inet->inet_saddr,
@@ -1367,6 +1383,8 @@ static struct sock *tcp_v4_cookie_check(struct sock *sk, struct sk_buff *skb)
  */
 int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct tcphdr *th = tcp_hdr(skb);
 	struct sock *rsk;
 
 	if (sk->sk_state == TCP_ESTABLISHED) { /* Fast path */
@@ -1387,6 +1405,15 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 
 	if (tcp_checksum_complete(skb))
 		goto csum_err;
+
+#ifdef CONFIG_TCP_STEALTH
+	if (sk->sk_state == TCP_LISTEN && th->syn && !th->fin &&
+	    unlikely(tp->stealth.mode & TCP_STEALTH_MODE_AUTH) &&
+	    tcp_stealth_do_auth(sk, skb)) {
+		rsk = sk;
+		goto reset;
+	}
+#endif
 
 	if (sk->sk_state == TCP_LISTEN) {
 		struct sock *nsk = tcp_v4_cookie_check(sk, skb);

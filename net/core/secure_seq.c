@@ -8,7 +8,11 @@
 #include <linux/ktime.h>
 #include <linux/string.h>
 #include <linux/net.h>
+#include <linux/socket.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
 
+#include <net/tcp.h>
 #include <net/secure_seq.h>
 
 #if IS_ENABLED(CONFIG_IPV6) || IS_ENABLED(CONFIG_INET)
@@ -37,6 +41,102 @@ static u32 seq_scale(u32 seq)
 	 */
 	return seq + (ktime_get_real_ns() >> 6);
 }
+#endif
+
+#ifdef CONFIG_TCP_STEALTH
+u32 tcp_stealth_sequence_number(struct sock *sk, __be32 *daddr,
+				u32 daddr_size, __be16 dport)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_md5sig_key *md5;
+
+	__u32 sec[MD5_MESSAGE_BYTES / sizeof(__u32)];
+	__u32 i;
+	__u32 tsval = 0;
+
+	__be32 iv[MD5_DIGEST_WORDS] = { 0 };
+	__be32 isn;
+
+	memcpy(iv, daddr, (daddr_size > sizeof(iv)) ? sizeof(iv) : daddr_size);
+
+#ifdef CONFIG_TCP_MD5SIG
+	md5 = tp->af_specific->md5_lookup(sk, sk);
+#else
+	md5 = NULL;
+#endif
+	if (likely(sysctl_tcp_timestamps && !md5) || tp->stealth.saw_tsval)
+		tsval = tp->stealth.mstamp.stamp_jiffies;
+
+	((__be16 *)iv)[2] ^= cpu_to_be16(tp->stealth.integrity_hash);
+	iv[2] ^= cpu_to_be32(tsval);
+	((__be16 *)iv)[6] ^= dport;
+
+	for (i = 0; i < MD5_DIGEST_WORDS; i++)
+		iv[i] = le32_to_cpu(iv[i]);
+	for (i = 0; i < MD5_MESSAGE_BYTES / sizeof(__le32); i++)
+		sec[i] = le32_to_cpu(((__le32 *)tp->stealth.secret)[i]);
+
+	md5_transform(iv, sec);
+
+	isn = cpu_to_be32(iv[0]) ^ cpu_to_be32(iv[1]) ^
+	      cpu_to_be32(iv[2]) ^ cpu_to_be32(iv[3]);
+
+	if (tp->stealth.mode & TCP_STEALTH_MODE_INTEGRITY)
+		be32_isn_to_be16_ih(isn) =
+			cpu_to_be16(tp->stealth.integrity_hash);
+
+	return be32_to_cpu(isn);
+}
+EXPORT_SYMBOL(tcp_stealth_sequence_number);
+
+u32 tcp_stealth_do_auth(struct sock *sk, struct sk_buff *skb)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct tcphdr *th = tcp_hdr(skb);
+	__be32 isn = th->seq;
+	__be32 hash;
+	__be32 *daddr;
+	u32 daddr_size;
+
+	tp->stealth.saw_tsval =
+		tcp_parse_tsval_option(&tp->stealth.mstamp.stamp_jiffies, th);
+
+	if (tp->stealth.mode & TCP_STEALTH_MODE_INTEGRITY_LEN)
+		tp->stealth.integrity_hash =
+			be16_to_cpu(be32_isn_to_be16_ih(isn));
+
+	switch (tp->inet_conn.icsk_inet.sk.sk_family) {
+#if IS_ENABLED(CONFIG_IPV6)
+	case PF_INET6:
+		daddr_size = sizeof(ipv6_hdr(skb)->daddr.s6_addr32);
+		daddr = ipv6_hdr(skb)->daddr.s6_addr32;
+	break;
+#endif
+	case PF_INET:
+		daddr_size = sizeof(ip_hdr(skb)->daddr);
+		daddr = &ip_hdr(skb)->daddr;
+	break;
+	default:
+		pr_err("TCP Stealth: Unknown network layer protocol, stop!\n");
+		return 1;
+	}
+
+	hash = tcp_stealth_sequence_number(sk, daddr, daddr_size, th->dest);
+	cpu_to_be32s(&hash);
+
+	if (tp->stealth.mode & TCP_STEALTH_MODE_AUTH &&
+	    tp->stealth.mode & TCP_STEALTH_MODE_INTEGRITY_LEN &&
+	    be32_isn_to_be16_av(isn) == be32_isn_to_be16_av(hash))
+		return 0;
+
+	if (tp->stealth.mode & TCP_STEALTH_MODE_AUTH &&
+	    !(tp->stealth.mode & TCP_STEALTH_MODE_INTEGRITY_LEN) &&
+	    isn == hash)
+		return 0;
+
+	return 1;
+}
+EXPORT_SYMBOL(tcp_stealth_do_auth);
 #endif
 
 #if IS_ENABLED(CONFIG_IPV6)

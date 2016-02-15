@@ -269,6 +269,7 @@
 #include <linux/crypto.h>
 #include <linux/time.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include <net/icmp.h>
 #include <net/inet_common.h>
@@ -2316,6 +2317,43 @@ static int tcp_repair_options_est(struct tcp_sock *tp,
 	return 0;
 }
 
+#ifdef CONFIG_TCP_STEALTH
+int tcp_stealth_integrity(__be16 *hash, u8 *secret, u8 *payload, int len)
+{
+	struct scatterlist sg[2];
+	struct crypto_hash *tfm;
+	struct hash_desc desc;
+	__be16 h[MD5_DIGEST_WORDS * 2];
+	int i;
+	int err = 0;
+
+	tfm = crypto_alloc_hash("md5", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(tfm)) {
+		err = -PTR_ERR(tfm);
+		goto out;
+	}
+	desc.tfm = tfm;
+	desc.flags = 0;
+
+	sg_init_table(sg, 2);
+	sg_set_buf(&sg[0], secret, MD5_MESSAGE_BYTES);
+	sg_set_buf(&sg[1], payload, len);
+
+	if (crypto_hash_digest(&desc, sg, MD5_MESSAGE_BYTES + len, (u8 *)h)) {
+		err = -EFAULT;
+		goto out;
+	}
+
+	*hash = be16_to_cpu(h[0]);
+	for (i = 1; i < MD5_DIGEST_WORDS * 2; i++)
+		*hash ^= be16_to_cpu(h[i]);
+
+out:
+	crypto_free_hash(tfm);
+	return err;
+}
+#endif
+
 /*
  *	Socket option code for TCP.
  */
@@ -2346,6 +2384,66 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		release_sock(sk);
 		return err;
 	}
+#ifdef CONFIG_TCP_STEALTH
+	case TCP_STEALTH: {
+		u8 secret[MD5_MESSAGE_BYTES] = { 0 };
+
+		val = copy_from_user(secret, optval,
+				     min_t(unsigned int, optlen,
+					   MD5_MESSAGE_BYTES));
+		if (val != 0)
+			return -EFAULT;
+
+		lock_sock(sk);
+		memcpy(tp->stealth.secret, secret, MD5_MESSAGE_BYTES);
+		tp->stealth.mode = TCP_STEALTH_MODE_AUTH;
+		tp->stealth.mstamp.v64 = 0;
+		tp->stealth.saw_tsval = false;
+		release_sock(sk);
+		return err;
+	}
+	case TCP_STEALTH_INTEGRITY: {
+		u8 *payload;
+
+		lock_sock(sk);
+
+		if (!(tp->stealth.mode & TCP_STEALTH_MODE_AUTH)) {
+			err = -EOPNOTSUPP;
+			goto stealth_integrity_out_1;
+		}
+
+		if (optlen < 1 || optlen > USHRT_MAX) {
+			err = -EINVAL;
+			goto stealth_integrity_out_1;
+		}
+
+		payload = vmalloc(optlen);
+		if (!payload) {
+			err = -ENOMEM;
+			goto stealth_integrity_out_1;
+		}
+
+		val = copy_from_user(payload, optval, optlen);
+		if (val != 0) {
+			err = -EFAULT;
+			goto stealth_integrity_out_2;
+		}
+
+		err = tcp_stealth_integrity(&tp->stealth.integrity_hash,
+					    tp->stealth.secret, payload,
+					    optlen);
+		if (err)
+			goto stealth_integrity_out_2;
+
+		tp->stealth.mode |= TCP_STEALTH_MODE_INTEGRITY;
+
+stealth_integrity_out_2:
+		vfree(payload);
+stealth_integrity_out_1:
+		release_sock(sk);
+		return err;
+	}
+#endif
 	default:
 		/* fallthru */
 		break;
@@ -2597,6 +2695,18 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		tp->notsent_lowat = val;
 		sk->sk_write_space(sk);
 		break;
+#ifdef CONFIG_TCP_STEALTH
+	case TCP_STEALTH_INTEGRITY_LEN:
+		if (!(tp->stealth.mode & TCP_STEALTH_MODE_AUTH)) {
+			err = -EOPNOTSUPP;
+		} else if (val < 1 || val > USHRT_MAX) {
+			err = -EINVAL;
+		} else {
+			tp->stealth.integrity_len = val;
+			tp->stealth.mode |= TCP_STEALTH_MODE_INTEGRITY_LEN;
+		}
+		break;
+#endif
 	default:
 		err = -ENOPROTOOPT;
 		break;

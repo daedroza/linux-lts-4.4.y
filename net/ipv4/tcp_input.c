@@ -77,6 +77,9 @@
 #include <linux/errqueue.h>
 
 int sysctl_tcp_timestamps __read_mostly = 1;
+#ifdef CONFIG_TCP_STEALTH
+EXPORT_SYMBOL(sysctl_tcp_timestamps);
+#endif
 int sysctl_tcp_window_scaling __read_mostly = 1;
 int sysctl_tcp_sack __read_mostly = 1;
 int sysctl_tcp_fack __read_mostly = 1;
@@ -3849,6 +3852,47 @@ static bool tcp_fast_parse_options(const struct sk_buff *skb,
 	return true;
 }
 
+#ifdef CONFIG_TCP_STEALTH
+/* Parse only the TSVal field of the TCP Timestamp option header.
+ */
+const bool tcp_parse_tsval_option(u32 *tsval, const struct tcphdr *th)
+{
+	int length = (th->doff << 2) - sizeof(*th);
+	const u8 *ptr = (const u8 *)(th + 1);
+
+	/* If the TCP option is too short, we can short cut */
+	if (length < TCPOLEN_TIMESTAMP)
+		return false;
+
+	while (length > 0) {
+		int opcode = *ptr++;
+		int opsize;
+
+		switch (opcode) {
+		case TCPOPT_EOL:
+			return false;
+		case TCPOPT_NOP:
+			length--;
+			continue;
+		case TCPOPT_TIMESTAMP:
+			opsize = *ptr++;
+			if (opsize != TCPOLEN_TIMESTAMP || opsize > length)
+				return false;
+			*tsval = get_unaligned_be32(ptr);
+			return true;
+		default:
+			opsize = *ptr++;
+			if (opsize < 2 || opsize > length)
+				return false;
+		}
+		ptr += opsize - 2;
+		length -= opsize;
+	}
+	return false;
+}
+EXPORT_SYMBOL(tcp_parse_tsval_option);
+#endif
+
 #ifdef CONFIG_TCP_MD5SIG
 /*
  * Parse MD5 Signature option
@@ -4531,6 +4575,31 @@ err:
 
 }
 
+#ifdef CONFIG_TCP_STEALTH
+static int __tcp_stealth_integrity_check(struct sock *sk, struct sk_buff *skb)
+{
+	struct tcphdr *th = tcp_hdr(skb);
+	struct tcp_sock *tp = tcp_sk(sk);
+	u16 hash;
+	__be32 seq = cpu_to_be32(TCP_SKB_CB(skb)->seq - 1);
+	char *data = skb->data + th->doff * 4;
+	int len = skb->len - th->doff * 4;
+
+	if (len < tp->stealth.integrity_len)
+		return 1;
+
+	if (tcp_stealth_integrity(&hash, tp->stealth.secret, data,
+				  tp->stealth.integrity_len))
+		return 1;
+
+	if (be32_isn_to_be16_ih(seq) != cpu_to_be16(hash))
+		return 1;
+
+	tp->stealth.mode &= ~TCP_STEALTH_MODE_INTEGRITY_LEN;
+	return 0;
+}
+#endif
+
 static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -4539,6 +4608,14 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 
 	if (TCP_SKB_CB(skb)->seq == TCP_SKB_CB(skb)->end_seq)
 		goto drop;
+
+#ifdef CONFIG_TCP_STEALTH
+	if (unlikely(tp->stealth.mode & TCP_STEALTH_MODE_INTEGRITY_LEN) &&
+	    __tcp_stealth_integrity_check(sk, skb)) {
+		tcp_reset(sk);
+		goto drop;
+	}
+#endif
 
 	skb_dst_drop(skb);
 	__skb_pull(skb, tcp_hdr(skb)->doff * 4);
@@ -5311,6 +5388,15 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 		} else {
 			int eaten = 0;
 			bool fragstolen = false;
+
+#ifdef CONFIG_TCP_STEALTH
+			if (unlikely(tp->stealth.mode &
+				     TCP_STEALTH_MODE_INTEGRITY_LEN) &&
+			    __tcp_stealth_integrity_check(sk, skb)) {
+				tcp_reset(sk);
+				goto discard;
+			}
+#endif
 
 			if (tp->ucopy.task == current &&
 			    tp->copied_seq == tp->rcv_nxt &&

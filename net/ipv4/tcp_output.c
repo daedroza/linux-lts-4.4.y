@@ -931,6 +931,13 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	tcb = TCP_SKB_CB(skb);
 	memset(&opts, 0, sizeof(opts));
 
+#ifdef TCP_STEALTH
+	if (unlikely(tcb->tcp_flags & TCPHDR_SYN &&
+		     tp->stealth.mode & TCP_STEALTH_MODE_AUTH)) {
+		skb->skb_mstamp = tp->stealth.mstamp;
+	}
+#endif
+
 	if (unlikely(tcb->tcp_flags & TCPHDR_SYN))
 		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
 	else
@@ -3255,7 +3262,15 @@ int tcp_connect(struct sock *sk)
 		return -ENOBUFS;
 
 	tcp_init_nondata_skb(buff, tp->write_seq++, TCPHDR_SYN);
+#ifdef CONFIG_TCP_STEALTH
+	/* The timetamp was already made at the time the ISN was generated
+	 * as we need to know its value in the stealth_tcp_sequence_number()
+	 * function.
+	 */
+	tp->retrans_stamp = tp->stealth.mstamp.stamp_jiffies;
+#else
 	tp->retrans_stamp = tcp_time_stamp;
+#endif
 	tcp_connect_queue_skb(sk, buff);
 	tcp_ecn_send_syn(sk, buff);
 

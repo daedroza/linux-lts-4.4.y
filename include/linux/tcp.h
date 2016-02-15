@@ -19,6 +19,7 @@
 
 
 #include <linux/skbuff.h>
+#include <linux/cryptohash.h>
 #include <net/sock.h>
 #include <net/inet_connection_sock.h>
 #include <net/inet_timewait_sock.h>
@@ -334,6 +335,21 @@ struct tcp_sock {
 
 /* TCP MD5 Signature Option information */
 	struct tcp_md5sig_info	__rcu *md5sig_info;
+#endif
+
+#ifdef CONFIG_TCP_STEALTH
+/* Stealth TCP socket configuration */
+	struct {
+		#define TCP_STEALTH_MODE_AUTH		BIT(0)
+		#define TCP_STEALTH_MODE_INTEGRITY	BIT(1)
+		#define TCP_STEALTH_MODE_INTEGRITY_LEN	BIT(2)
+		u8 mode;
+		u8 secret[MD5_MESSAGE_BYTES];
+		u16 integrity_hash;
+		size_t integrity_len;
+		struct skb_mstamp mstamp;
+		bool saw_tsval;
+	} stealth;
 #endif
 
 /* TCP fastopen related information */
