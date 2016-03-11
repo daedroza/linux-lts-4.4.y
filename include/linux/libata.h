@@ -125,11 +125,7 @@ enum {
 	LIBATA_DUMB_MAX_PRD	= ATA_MAX_PRD / 4,	/* Worst case */
 	ATA_DEF_QUEUE		= 1,
 	/* tag ATA_MAX_QUEUE - 1 is reserved for internal commands */
-#ifdef CONFIG_ZEN_INTERACTIVE
-	ATA_MAX_QUEUE		= 8,
-#else
 	ATA_MAX_QUEUE		= 32,
-#endif
 	ATA_TAG_INTERNAL	= ATA_MAX_QUEUE - 1,
 	ATA_SHORT_PAUSE		= 16,
 
