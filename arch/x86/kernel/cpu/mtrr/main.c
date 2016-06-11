@@ -448,7 +448,21 @@ int mtrr_add(unsigned long base, unsigned long size, unsigned int type,
 	return mtrr_add_page(base >> PAGE_SHIFT, size >> PAGE_SHIFT, type,
 			     increment);
 }
+EXPORT_SYMBOL(mtrr_add);
 
+/**
+ * With 2baa891e42d84159b693eadd44f6fe1486285bdc the kernel internal 
+ * MTRR interfaces (unexport mtrr_add() and mtrr_del()) got removed.
+ * However Nvidia legacy driver 304xx still needs these exports:
+ *
+ * # modprobe -v nvidia
+ * insmod /lib/modules/4.3.0-1-ARCH/extramodules/nvidia.ko.gz
+ * modprobe: ERROR: could not insert 'nvidia': Unknown symbol in module,
+ * or unknown parameter (see dmesg)
+ * 
+ * [ 22.236809] nvidia: Unknown symbol mtrr_del (err 0)
+ * [ 22.237073] nvidia: Unknown symbol mtrr_add (err 0)
+ * /
 /**
  * mtrr_del_page - delete a memory type region
  * @reg: Register returned by mtrr_add
@@ -513,7 +527,21 @@ int mtrr_del_page(int reg, unsigned long base, unsigned long size)
 	put_online_cpus();
 	return error;
 }
+EXPORT_SYMBOL(mtrr_del);
 
+/**
+ * With 2baa891e42d84159b693eadd44f6fe1486285bdc the kernel internal 
+ * MTRR interfaces (unexport mtrr_add() and mtrr_del()) got removed.
+ * However Nvidia legacy driver 304xx still needs these exports:
+ *
+ * # modprobe -v nvidia
+ * insmod /lib/modules/4.3.0-1-ARCH/extramodules/nvidia.ko.gz
+ * modprobe: ERROR: could not insert 'nvidia': Unknown symbol in module,
+ * or unknown parameter (see dmesg)
+ * 
+ * [ 22.236809] nvidia: Unknown symbol mtrr_del (err 0)
+ * [ 22.237073] nvidia: Unknown symbol mtrr_add (err 0)
+ * /
 /**
  * mtrr_del - delete a memory type region
  * @reg: Register returned by mtrr_add
